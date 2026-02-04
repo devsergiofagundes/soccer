@@ -1,0 +1,42 @@
+# --- SENSITIVE DATA ---
+# This is the most important part!
+.env
+*.env
+.env.local
+.env.development.local
+.env.test.local
+.env.production.local
+*.pem
+*.key
+
+# --- DEPENDENCIES ---
+# Don't upload libraries; others will install them via the lockfile
+node_modules/
+jspm_packages/
+venv/
+.venv/
+env/
+bin/
+obj/
+
+# --- BUILD & OUTPUT ---
+# These are generated files, not source code
+dist/
+build/
+.next/
+out/
+*.exe
+*.dll
+*.so
+
+# --- OPERATING SYSTEM CLUTTER ---
+.DS_Store
+Thumbs.db
+desktop.ini
+
+# --- LOGS ---
+logs
+*.log
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
