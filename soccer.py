@@ -1,42 +1,45 @@
-import os
-import requests
 import streamlit as st
+import requests
 import pandas as pd
 import pytz
 import time
 import math
 from datetime import datetime, timedelta
 
-# --- CONFIG & SECRETS ---
-# Ensure you set FOOTBALL_API_KEY in your Streamlit Cloud Secrets dashboard!
+# --- CONFIGURATION ---
+# No more dotenv! We use Streamlit Secrets for security.
 API_KEY = st.secrets["FOOTBALL_API_KEY"]
 BASE_URL = 'https://api.football-data.org/v4'
 HEADERS = {'X-Auth-Token': API_KEY}
 LOCAL_TIMEZONE = pytz.timezone('America/Sao_Paulo')
 
-# Prediction Weights
+# Prediction Constants
 MAX_SCORE = 100
 WIN_VALUE, DRAW_VALUE, LOSE_VALUE = 2, 1, -1
 WIN_WEIGHT, DRAW_WEIGHT, LOSE_WEIGHT = 2, 1, 2
 
-# --- API RATE LIMITER ---
-def call_api(url, params=None):
-    """Centralized API caller to prevent 429 errors."""
-    # The free tier is VERY strict. 6 seconds between EVERY call is safest.
+#=====================================
+# API HELPER (Prevents 429 Errors)
+#=====================================
+def call_api(endpoint, params=None):
+    """Wait 6.5s before every call to respect the 10-req/min free tier."""
     time.sleep(6.5) 
+    url = f"{BASE_URL}/{endpoint}"
     try:
         response = requests.get(url, headers=HEADERS, params=params)
         if response.status_code == 429:
-            st.error("Rate limit hit (429). Waiting 30 seconds...")
+            st.error("Rate limit reached. Waiting 30s...")
             time.sleep(30)
-            return call_api(url, params)
+            return call_api(endpoint, params)
         response.raise_for_status()
         return response.json()
     except Exception as e:
-        st.error(f"API Error: {e}")
+        st.error(f"Error fetching {endpoint}: {e}")
         return None
 
-# --- HELPER FUNCTIONS ---
+#=====================================
+# LOGIC FUNCTIONS
+#=====================================
 def utc_to_local(utc_date_str: str) -> str:
     if not utc_date_str: return "N/A"
     try:
@@ -48,7 +51,6 @@ def poisson_pmf(k, lambda_val):
     if k < 0: return 0.0
     return (lambda_val**k * math.exp(-lambda_val)) / math.factorial(k)
 
-# (Keeping your core logic functions mostly the same, but removing internal prints)
 def calculate_team_points(matches, team_name):
     record = {
         "Home_Win": 0, "Home_Draw": 0, "Home_Lose": 0, "Home_Total": 0,
@@ -77,19 +79,14 @@ def calculate_team_points(matches, team_name):
     total = record['Home_Total'] + record['Away_Total']
     record['Home_W_Weight'] = record['Home_Win'] / record['Home_Total'] if record['Home_Total'] > 0 else 0
     record['Away_W_Weight'] = record['Away_Win'] / record['Away_Total'] if record['Away_Total'] > 0 else 0
-    record['Home_WD_Weight'] = (record['Home_Win'] + record['Home_Draw']) / record['Home_Total'] if record['Home_Total'] > 0 else 0
-    record['Away_WD_Weight'] = (record['Away_Win'] + record['Away_Draw']) / record['Away_Total'] if record['Away_Total'] > 0 else 0
     record['Average_Goals'] = (record['Home_Goals'] + record['Away_Goals']) / total if total > 0 else 0
     return record
 
-# --- UI PREDICTION WRAPPERS ---
 def find_most_probable_score(total_goals, avg_a, avg_b, result):
-    # Logic remains same as your original
     if result == 0 and total_goals % 2 != 0:
-        total_goals = 2 if total_goals == 1 else total_goals - 1
+        total_goals = 2 if total_goals == 1 else max(0, total_goals - 1)
     
-    best_prob = -1
-    best_score = (0, 0)
+    best_prob, best_score = -1.0, (0, 0)
     for gA in range(total_goals + 1):
         gB = total_goals - gA
         if (result == 0 and gA == gB) or (result == 1 and gA > gB) or (result == 2 and gB > gA):
@@ -98,40 +95,41 @@ def find_most_probable_score(total_goals, avg_a, avg_b, result):
                 best_prob, best_score = prob, (gA, gB)
     return best_score
 
-# --- MAIN STREAMLIT APP ---
-st.set_page_config(page_title="Football Predictor", layout="wide")
+#=====================================
+# STREAMLIT UI
+#=====================================
+st.set_page_config(page_title="Soccer Match Predictor", layout="wide")
 st.title("⚽ Soccer Match Predictor")
 
-# Sidebar for League Selection to save API calls
-leagues = {
+# Competition Mapping (Saves API lookups)
+country_competitions = {
     "Brazil": "BSA", "England": "PL", "France": "FL1", 
-    "Germany": "BL1", "Italy": "SA", "Spain": "PD", "Europe": "CL"
+    "Germany": "BL1", "Italy": "SA", "Netherlands": "DED",
+    "Portugal": "PPL", "Spain": "PD", "Europe": "CL"
 }
-selected_league = st.sidebar.selectbox("Select League", list(leagues.keys()))
 
-if st.sidebar.button("Run Prediction"):
-    comp_code = leagues[selected_league]
+selected_country = st.sidebar.selectbox("Select Country/League", list(country_competitions.keys()))
+
+if st.sidebar.button("Run Predictions"):
+    comp_code = country_competitions[selected_country]
     
-    with st.status(f"Analyzing {selected_league}...", expanded=True) as status:
-        # 1. Fetch Scheduled
-        st.write("Fetching upcoming matches...")
-        sched_data = call_api(f"{BASE_URL}/competitions/{comp_code}/matches", {"status": "SCHEDULED"})
+    with st.status(f"Processing {selected_country}...", expanded=True) as status:
+        st.write("Getting scheduled matches...")
+        sched_data = call_api(f"competitions/{comp_code}/matches", {"status": "SCHEDULED"})
         
         if not sched_data or not sched_data.get('matches'):
-            st.warning("No matches found.")
+            st.warning(f"No upcoming matches for {selected_country}.")
         else:
-            # 2. Fetch Historical for Calculation
-            st.write("Fetching historical results...")
-            hist_data = call_api(f"{BASE_URL}/competitions/{comp_code}/matches", {"status": "FINISHED"})
-            finished_matches = hist_data.get('matches', [])
+            st.write("Fetching historical data (this takes a moment)...")
+            hist_data = call_api(f"competitions/{comp_code}/matches", {"status": "FINISHED"})
+            finished_matches = hist_data.get('matches', []) if hist_data else []
 
-            predictions = []
-            for match in sched_data['matches'][:10]: # Limit to top 10 to avoid excessive processing
+            results = []
+            for match in sched_data['matches'][:12]: # Process top 12 matches
                 home = match['homeTeam']['shortName']
                 away = match['awayTeam']['shortName']
                 date = utc_to_local(match['utcDate'])
                 
-                # Calculate scores
                 h_rec = calculate_team_points(finished_matches, home)
                 a_rec = calculate_team_points(finished_matches, away)
                 
@@ -143,18 +141,18 @@ if st.sidebar.button("Run Prediction"):
                 exact = find_most_probable_score(int(round(avg_goals)), h_rec['Average_Goals'], a_rec['Average_Goals'], res_type)
                 
                 pred_label = "1W" if res_type == 1 else "2W" if res_type == 2 else "X"
-                
-                predictions.append({
+                goal_tag = " > 2.5" if avg_goals > 2.5 else " > 1.5" if avg_goals > 1.5 else " < 1.5"
+
+                results.append({
                     "Date": date,
-                    "Match": f"{home} vs {away}",
-                    "Pred. Score": f"{exact[0]} - {exact[1]}",
-                    "Result": pred_label,
+                    "Home Team": home,
+                    "Away Team": away,
+                    "Predicted Score": f"{exact[0]} - {exact[1]}",
+                    "Prediction": f"{pred_label} ({goal_tag})",
                     "Avg Goals": round(avg_goals, 2)
                 })
             
-            status.update(label="Analysis Complete!", state="complete", expanded=False)
+            status.update(label="Complete!", state="complete")
             
-            # --- DISPLAY TABLE ---
-            st.subheader(f"Predictions for {selected_league}")
-            df = pd.DataFrame(predictions)
-            st.dataframe(df, use_container_width=True, hide_index=True)
+            st.subheader(f"Results: {selected_country}")
+            st.table(pd.DataFrame(results))
